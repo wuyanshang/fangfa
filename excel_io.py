@@ -202,15 +202,32 @@ def write_final_excel(state: WorkflowState):
 
     # ── Sheet2: 组表 ──
     ws2 = wb.create_sheet("组表")
-    headers2 = ["组号", "组大小", "资产名列表", "是否完全连通", "是否需人工审核"]
+    headers2 = [
+        "组号",
+        "组大小",
+        "输入行数(不去重)",
+        "资产名列表",
+        "资产名列表(含重复,按输入)",
+        "是否完全连通",
+        "是否需人工审核",
+    ]
     ws2.append(headers2)
 
     groups: list[AssetGroup] = state["groups"]
+    input_name_rows = defaultdict(list)
+    for row in state["asset_rows"]:
+        input_name_rows[row.asset].append(row.asset)
+
     for g in sorted(groups, key=lambda x: -len(x.asset_names)):
+        input_names_with_dup = []
+        for name in g.asset_names:
+            input_names_with_dup.extend(input_name_rows.get(name, []))
         ws2.append([
             g.group_id,
             len(g.asset_names),
+            len(input_names_with_dup),
             " | ".join(g.asset_names),
+            " | ".join(input_names_with_dup),
             "是" if g.is_fully_connected else "否",
             "是" if g.needs_review else "否",
         ])
@@ -219,7 +236,7 @@ def write_final_excel(state: WorkflowState):
     _style_data(ws2, ws2.max_row, len(headers2))
     # 标记需审核的行
     for row in range(2, ws2.max_row + 1):
-        if ws2.cell(row=row, column=5).value == "是":
+        if ws2.cell(row=row, column=7).value == "是":
             for col in range(1, len(headers2) + 1):
                 ws2.cell(row=row, column=col).fill = REVIEW_FILL
     _auto_width(ws2, len(headers2))
