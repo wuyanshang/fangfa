@@ -125,7 +125,7 @@ def _find_bridges_and_articulation_points(
 
 
 # 
-# 0: IO?# 
+# Stage 0: normalize and exact-name grouping
 def phase0_normalize(state: WorkflowState) -> dict:
     """Normalize names and generate exact-match pairs from normalized buckets."""
     rows: list[AssetRow] = state["asset_rows"]
@@ -152,8 +152,8 @@ def phase0_normalize(state: WorkflowState) -> dict:
                         score=1.0,
                     ))
 
-    print(f"[0] ? {len(rows)}, ? {len(unique_names)}, "
-          f"? {len(phase0_pairs)}")
+    print(f"[phase0] rows: {len(rows)}, unique names: {len(unique_names)}, "
+          f"exact-match pairs: {len(phase0_pairs)}")
 
     return {
         "normalized_groups": dict(groups),
@@ -163,7 +163,7 @@ def phase0_normalize(state: WorkflowState) -> dict:
 
 
 # 
-# 1: KNN ?# 
+# Stage 1: KNN filter
 def phase1_knn_filter(state: WorkflowState) -> dict:
     """Run KNN top-1 filter and keep names that pass the threshold."""
     unique_names = state["unique_names"]
@@ -186,15 +186,16 @@ def phase1_knn_filter(state: WorkflowState) -> dict:
             done_count += 1
             if done_count % 500 == 0 or done_count == total:
                 print(f"[1] : {done_count}/{total}")
-            result = future.result()  # retry_forever ?            if result is not None:
+            result = future.result()  # retry_forever guarantees no exception here
+            if result is not None:
                 candidate_names.append(result)
 
-    print(f"[1] ? {len(candidate_names)} / {total}")
+    print(f"[phase1] passed candidates: {len(candidate_names)} / {total}")
     return {"candidate_names": candidate_names}
 
 
 # 
-# 2: + ?# 
+# Stage 2: recall and deduplicate
 def phase2_recall(state: WorkflowState) -> dict:
     """Recall candidate pairs from semantic/BM25/fuzzy routes and deduplicate."""
     if ENABLE_CHECKPOINT_RESUME and is_stage_completed("phase2") and has_phase2_pairs():
@@ -257,12 +258,12 @@ def phase2_recall(state: WorkflowState) -> dict:
 
 
 # 
-# 3: LLM ?# 
+# Stage 3: batched LLM judgment
 def phase3_llm_judge(state: WorkflowState) -> dict:
     """Run batched LLM YES/NO judgments for candidate pairs."""
     if ENABLE_CHECKPOINT_RESUME and is_stage_completed("phase3") and has_phase3_results():
         cached_results = load_phase3_results()
-        print(f"[3] : ?{len(cached_results)}")
+        print(f"[phase3] resume from checkpoint: {len(cached_results)}")
         return {"judge_results": cached_results}
 
     reset_stage("phase3")
@@ -281,8 +282,8 @@ def phase3_llm_judge(state: WorkflowState) -> dict:
         pairs_to_judge.append(p)
     total = len(pairs_to_judge)
     print(
-        f"[3] LLM: {total} ?"
-        f"(0? {len(phase0_keys)}, ? {len(existing_map)})"
+        f"[phase3] pairs to judge: {total} "
+        f"(exclude phase0 exact: {len(phase0_keys)}, resumed: {len(existing_map)})"
     )
 
     judge_results = list(existing_results)
@@ -315,7 +316,7 @@ def phase3_llm_judge(state: WorkflowState) -> dict:
         append_phase3_results(batch_buffer)
         batch_buffer = []
 
- # 0? phase0_results_to_append = []
+    # Append phase0 exact-match pairs as YES
     for p in state["phase0_pairs"]:
         key = p.key
         if key in existing_map:
@@ -329,13 +330,13 @@ def phase3_llm_judge(state: WorkflowState) -> dict:
 
     yes_count = sum(1 for r in judge_results if r.result == "YES")
     no_count = sum(1 for r in judge_results if r.result == "NO")
-    print(f"[3] . YES: {yes_count}, NO: {no_count}")
+    print(f"[phase3] finished. YES: {yes_count}, NO: {no_count}")
 
     return {"judge_results": judge_results}
 
 
 # 
-# 4: ?+ + ?# 
+# Stage 4: graph build and bridge recheck
 def phase4_build_graph(state: WorkflowState) -> dict:
     """Recheck bridge edges to split mistakenly merged large components."""
     judge_results: list[JudgeResult] = state["judge_results"]
