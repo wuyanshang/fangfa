@@ -1,4 +1,4 @@
-﻿"""
+"""
 LangGraph workflow nodes implemented with ThreadPoolExecutor."""
 import logging
 from collections import defaultdict
@@ -8,6 +8,7 @@ from .config import (
     KNN_TOP1_THRESHOLD, SEMANTIC_TOP_K, BM25_TOP_K, EXACT_MATCH_TOP_K,
     LLM_CONCURRENCY, ES_CONCURRENCY, GROUP_SIZE_REVIEW_THRESHOLD,
     PHASE3_WRITE_BATCH_SIZE, PHASE4_WRITE_BATCH_SIZE, ENABLE_CHECKPOINT_RESUME,
+    COMMUNITY_SPLIT_THRESHOLD,
 )
 from .models import AssetRow, CandidatePair, JudgeResult, AssetGroup, WorkflowState
 from .checkpoint_io import (
@@ -122,6 +123,94 @@ def _find_bridges_and_articulation_points(
             dfs(node)
 
     return bridges, articulation_points
+
+
+def _louvain_communities(edges: set[tuple[str, str]]) -> list[set[str]]:
+    """Pure-Python Louvain community detection. Returns list of node sets."""
+    adj: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for a, b in edges:
+        adj[a][b] += 1
+        adj[b][a] += 1
+
+    nodes = list(adj.keys())
+    if not nodes:
+        return []
+
+    m = sum(adj[u][v] for u in adj for v in adj[u]) / 2
+    if m == 0:
+        return [{n} for n in nodes]
+
+    community: dict[str, str] = {n: n for n in nodes}
+    degree: dict[str, int] = {n: sum(adj[n].values()) for n in nodes}
+
+    sigma_tot: dict[str, int] = defaultdict(int)
+    sigma_in: dict[str, int] = defaultdict(int)
+    for n in nodes:
+        sigma_tot[community[n]] += degree[n]
+    for a, b in edges:
+        if community[a] == community[b]:
+            sigma_in[community[a]] += 2
+
+    def _modularity_gain(node: str, target_comm: str, k_i_in: int) -> float:
+        k_i = degree[node]
+        st = sigma_tot[target_comm]
+        return k_i_in / m - st * k_i / (2.0 * m * m)
+
+    improved = True
+    while improved:
+        improved = False
+        for node in nodes:
+            cur_comm = community[node]
+            k_i = degree[node]
+
+            k_i_in_cur = 0
+            neighbor_comms: dict[str, int] = defaultdict(int)
+            for nb, w in adj[node].items():
+                nb_comm = community[nb]
+                if nb_comm == cur_comm:
+                    k_i_in_cur += w
+                neighbor_comms[nb_comm] += w
+
+            sigma_tot[cur_comm] -= k_i
+            sigma_in[cur_comm] -= 2 * k_i_in_cur
+
+            remove_cost = -_modularity_gain(node, cur_comm, k_i_in_cur)
+
+            best_comm = cur_comm
+            best_gain = 0.0
+            for cand_comm, k_i_in_cand in neighbor_comms.items():
+                gain = remove_cost + _modularity_gain(node, cand_comm, k_i_in_cand)
+                if gain > best_gain:
+                    best_gain = gain
+                    best_comm = cand_comm
+
+            community[node] = best_comm
+            sigma_tot[best_comm] += k_i
+            k_i_in_new = 0
+            for nb, w in adj[node].items():
+                if community[nb] == best_comm:
+                    k_i_in_new += w
+            sigma_in[best_comm] += 2 * k_i_in_new
+
+            if best_comm != cur_comm:
+                improved = True
+
+    result: dict[str, set[str]] = defaultdict(set)
+    for node, comm in community.items():
+        result[comm].add(node)
+    return list(result.values())
+
+
+def _split_large_component(
+    component: set[str],
+    yes_edges: set[tuple[str, str]],
+) -> list[set[str]]:
+    """Apply Louvain to split a large connected component into sub-communities."""
+    sub_edges = {(a, b) for a, b in yes_edges if a in component and b in component}
+    communities = _louvain_communities(sub_edges)
+    if len(communities) <= 1:
+        return [component]
+    return communities
 
 
 # 
@@ -316,7 +405,7 @@ def phase3_llm_judge(state: WorkflowState) -> dict:
         append_phase3_results(batch_buffer)
         batch_buffer = []
 
-    # Append phase0 exact-match pairs as YES
+    phase0_results_to_append = []
     for p in state["phase0_pairs"]:
         key = p.key
         if key in existing_map:
@@ -324,7 +413,8 @@ def phase3_llm_judge(state: WorkflowState) -> dict:
         r = JudgeResult(name_a=p.name_a, name_b=p.name_b, result="YES", source="phase0_exact")
         judge_results.append(r)
         phase0_results_to_append.append(r)
-    append_phase3_results(phase0_results_to_append)
+    if phase0_results_to_append:
+        append_phase3_results(phase0_results_to_append)
 
     mark_stage_completed("phase3")
 
@@ -410,19 +500,33 @@ def phase4_build_graph(state: WorkflowState) -> dict:
         if result == "YES"
     }
     final_components = _connected_components_from_edges(final_yes_edges)
-    node_to_component = {}
-    for idx, comp in enumerate(final_components):
+
+    split_components: list[set[str]] = []
+    for comp in final_components:
+        if len(comp) > COMMUNITY_SPLIT_THRESHOLD:
+            sub_communities = _split_large_component(comp, final_yes_edges)
+            print(
+                f"[phase4] Louvain split: {len(comp)} nodes -> "
+                f"{len(sub_communities)} communities "
+                f"(sizes: {sorted([len(c) for c in sub_communities], reverse=True)})"
+            )
+            split_components.extend(sub_communities)
+        else:
+            split_components.append(comp)
+
+    node_to_component: dict[str, int] = {}
+    for idx, comp in enumerate(split_components):
         for node in comp:
             node_to_component[node] = idx
 
-    component_edge_count = [0] * len(final_components)
+    component_edge_count = [0] * len(split_components)
     for a, b in final_yes_edges:
         comp_idx = node_to_component.get(a)
         if comp_idx is not None and comp_idx == node_to_component.get(b):
             component_edge_count[comp_idx] += 1
 
     groups = []
-    for idx, comp in enumerate(final_components):
+    for idx, comp in enumerate(split_components):
         members = sorted(comp)
         n = len(members)
         expected_edges = n * (n - 1) // 2
@@ -437,7 +541,8 @@ def phase4_build_graph(state: WorkflowState) -> dict:
         ))
 
     print(
-        f"[phase4] final groups: {len(groups)}, "
+        f"[phase4] final groups: {len(groups)} "
+        f"(after Louvain split from {len(final_components)} components), "
         f"needs review: {sum(1 for g in groups if g.needs_review)}"
     )
 
