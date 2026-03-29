@@ -27,6 +27,7 @@ EXACT_MATCH_TOP_K = 20          # 精确/模糊召回数量
 LLM_CONCURRENCY = 50            # LLM 并发数
 ES_CONCURRENCY = 50             # ES 查询并发数
 GROUP_SIZE_REVIEW_THRESHOLD = 10  # 超过此数量标记为待人工审核
+COMMUNITY_SPLIT_THRESHOLD = 50    # 连通分量超过此节点数时，用 Louvain 拆分为子社区
 
 # ── 重试配置 ──
 RETRY_BASE_DELAY = 1.0            # 首次重试等待秒数
