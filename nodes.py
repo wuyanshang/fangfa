@@ -1,11 +1,8 @@
-"""
-LangGraph 节点：每个阶段对应一个节点函数
-全部使用多线程并发（ThreadPoolExecutor）
-"""
+﻿"""
+LangGraph 鑺傜偣锛氭瘡涓樁娈靛搴斾竴涓妭鐐瑰嚱鏁?鍏ㄩ儴浣跨敤澶氱嚎绋嬪苟鍙戯紙ThreadPoolExecutor锛?"""
 import logging
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from itertools import combinations
 
 from .config import (
     KNN_TOP1_THRESHOLD, SEMANTIC_TOP_K, BM25_TOP_K, EXACT_MATCH_TOP_K,
@@ -37,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 def _connected_components_from_edges(edges: set[tuple[str, str]]) -> list[set[str]]:
-    """用并查集计算无向图连通分量。"""
+    """鐢ㄥ苟鏌ラ泦璁＄畻鏃犲悜鍥捐繛閫氬垎閲忋€?""
     parent: dict[str, str] = {}
     rank: dict[str, int] = {}
 
@@ -79,12 +76,58 @@ def _connected_components_from_edges(edges: set[tuple[str, str]]) -> list[set[st
 
     return list(groups.values())
 
+def _find_bridges_and_articulation_points(
+    edges: set[tuple[str, str]]
+) -> tuple[set[tuple[str, str]], set[str]]:
+    """Tarjan bridge/articulation algorithm on undirected graph."""
+    adjacency: dict[str, set[str]] = defaultdict(set)
+    for a, b in edges:
+        adjacency[a].add(b)
+        adjacency[b].add(a)
 
-# ══════════════════════════════════════
-# 阶段 0: 精确同名归组（纯内存，无IO）
-# ══════════════════════════════════════
+    discovery_time: dict[str, int] = {}
+    low_link: dict[str, int] = {}
+    parent: dict[str, str | None] = {}
+    bridges: set[tuple[str, str]] = set()
+    articulation_points: set[str] = set()
+    timer = 0
+
+    def dfs(node: str):
+        nonlocal timer
+        timer += 1
+        discovery_time[node] = timer
+        low_link[node] = timer
+        child_count = 0
+
+        for neighbor in adjacency[node]:
+            if neighbor not in discovery_time:
+                parent[neighbor] = node
+                child_count += 1
+                dfs(neighbor)
+                low_link[node] = min(low_link[node], low_link[neighbor])
+
+                if low_link[neighbor] > discovery_time[node]:
+                    bridges.add(tuple(sorted([node, neighbor])))
+
+                if parent[node] is None and child_count > 1:
+                    articulation_points.add(node)
+                if parent[node] is not None and low_link[neighbor] >= discovery_time[node]:
+                    articulation_points.add(node)
+            elif neighbor != parent[node]:
+                low_link[node] = min(low_link[node], discovery_time[neighbor])
+
+    for node in adjacency:
+        if node not in discovery_time:
+            parent[node] = None
+            dfs(node)
+
+    return bridges, articulation_points
+
+
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
+# 闃舵 0: 绮剧‘鍚屽悕褰掔粍锛堢函鍐呭瓨锛屾棤IO锛?# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
 def phase0_normalize(state: WorkflowState) -> dict:
-    """字符串归一化 → 精确同名聚合"""
+    """瀛楃涓插綊涓€鍖?鈫?绮剧‘鍚屽悕鑱氬悎"""
     rows: list[AssetRow] = state["asset_rows"]
 
     groups = defaultdict(list)
@@ -109,8 +152,8 @@ def phase0_normalize(state: WorkflowState) -> dict:
                         score=1.0,
                     ))
 
-    print(f"[阶段0] 总行数: {len(rows)}, 唯一资产名: {len(unique_names)}, "
-          f"精确同名对: {len(phase0_pairs)}")
+    print(f"[闃舵0] 鎬昏鏁? {len(rows)}, 鍞竴璧勪骇鍚? {len(unique_names)}, "
+          f"绮剧‘鍚屽悕瀵? {len(phase0_pairs)}")
 
     return {
         "normalized_groups": dict(groups),
@@ -119,11 +162,10 @@ def phase0_normalize(state: WorkflowState) -> dict:
     }
 
 
-# ══════════════════════════════════════
-# 阶段 1: KNN 快筛（多线程）
-# ══════════════════════════════════════
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
+# 闃舵 1: KNN 蹇瓫锛堝绾跨▼锛?# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
 def phase1_knn_filter(state: WorkflowState) -> dict:
-    """对每个唯一资产名做 knn top-1 快筛，多线程并发"""
+    """瀵规瘡涓敮涓€璧勪骇鍚嶅仛 knn top-1 蹇瓫锛屽绾跨▼骞跺彂"""
     unique_names = state["unique_names"]
     candidate_names = []
     total = len(unique_names)
@@ -143,23 +185,21 @@ def phase1_knn_filter(state: WorkflowState) -> dict:
         for future in as_completed(futures):
             done_count += 1
             if done_count % 500 == 0 or done_count == total:
-                print(f"[阶段1] 进度: {done_count}/{total}")
-            result = future.result()  # retry_forever 保证不会抛异常
-            if result is not None:
+                print(f"[闃舵1] 杩涘害: {done_count}/{total}")
+            result = future.result()  # retry_forever 淇濊瘉涓嶄細鎶涘紓甯?            if result is not None:
                 candidate_names.append(result)
 
-    print(f"[阶段1] 快筛后候选资产: {len(candidate_names)} / {total}")
+    print(f"[闃舵1] 蹇瓫鍚庡€欓€夎祫浜? {len(candidate_names)} / {total}")
     return {"candidate_names": candidate_names}
 
 
-# ══════════════════════════════════════
-# 阶段 2: 三路召回 + 对称去重（多线程）
-# ══════════════════════════════════════
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
+# 闃舵 2: 涓夎矾鍙洖 + 瀵圭О鍘婚噸锛堝绾跨▼锛?# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
 def phase2_recall(state: WorkflowState) -> dict:
-    """对候选资产做 3 路召回，收集候选对并去重，多线程并发"""
+    """瀵瑰€欓€夎祫浜у仛 3 璺彫鍥烇紝鏀堕泦鍊欓€夊骞跺幓閲嶏紝澶氱嚎绋嬪苟鍙?""
     if ENABLE_CHECKPOINT_RESUME and is_stage_completed("phase2") and has_phase2_pairs():
         cached_pairs = load_phase2_pairs()
-        print(f"[阶段2] 断点恢复: 已加载候选对 {len(cached_pairs)}")
+        print(f"[闃舵2] 鏂偣鎭㈠: 宸插姞杞藉€欓€夊 {len(cached_pairs)}")
         return {"all_pairs": cached_pairs}
 
     reset_stage("phase2")
@@ -169,23 +209,23 @@ def phase2_recall(state: WorkflowState) -> dict:
     pair_set_lock = __import__("threading").Lock()
 
     def recall_one(name: str) -> list[str]:
-        """三路召回一个资产名的所有候选"""
+        """涓夎矾鍙洖涓€涓祫浜у悕鐨勬墍鏈夊€欓€?""
         exclude = [name]
         recalled = set()
 
-        # R1: 语义召回
+        # R1: 璇箟鍙洖
         embedding = get_embedding_from_es(name)
         if embedding:
             r1 = es_knn_search(embedding, k=SEMANTIC_TOP_K, exclude_names=exclude)
             for item in r1:
                 recalled.add(item["asset"])
 
-        # R2: BM25 召回
+        # R2: BM25 鍙洖
         r2 = es_bm25_search(name, top_k=BM25_TOP_K, exclude_names=exclude)
         for item in r2:
             recalled.add(item["asset"])
 
-        # R3: 精确/模糊匹配召回
+        # R3: 绮剧‘/妯＄硦鍖归厤鍙洖
         r3 = es_exact_fuzzy_search(name, top_k=EXACT_MATCH_TOP_K, exclude_names=exclude)
         for item in r3:
             recalled.add(item["asset"])
@@ -198,7 +238,7 @@ def phase2_recall(state: WorkflowState) -> dict:
         for future in as_completed(futures):
             done_count += 1
             if done_count % 200 == 0 or done_count == total:
-                print(f"[阶段2] 召回进度: {done_count}/{total}")
+                print(f"[闃舵2] 鍙洖杩涘害: {done_count}/{total}")
             name_a = futures[future]
             recalled_names = future.result()
             with pair_set_lock:
@@ -212,18 +252,17 @@ def phase2_recall(state: WorkflowState) -> dict:
     ]
     write_phase2_pairs_batched(all_pairs)
     mark_stage_completed("phase2")
-    print(f"[阶段2] 去重后候选对: {len(all_pairs)}")
+    print(f"[闃舵2] 鍘婚噸鍚庡€欓€夊: {len(all_pairs)}")
     return {"all_pairs": all_pairs}
 
 
-# ══════════════════════════════════════
-# 阶段 3: LLM 批量判断（多线程）
-# ══════════════════════════════════════
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
+# 闃舵 3: LLM 鎵归噺鍒ゆ柇锛堝绾跨▼锛?# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
 def phase3_llm_judge(state: WorkflowState) -> dict:
-    """对所有候选对调用 LLM 判断 YES/NO，多线程并发"""
+    """瀵规墍鏈夊€欓€夊璋冪敤 LLM 鍒ゆ柇 YES/NO锛屽绾跨▼骞跺彂"""
     if ENABLE_CHECKPOINT_RESUME and is_stage_completed("phase3") and has_phase3_results():
         cached_results = load_phase3_results()
-        print(f"[阶段3] 断点恢复: 已加载判断结果 {len(cached_results)}")
+        print(f"[闃舵3] 鏂偣鎭㈠: 宸插姞杞藉垽鏂粨鏋?{len(cached_results)}")
         return {"judge_results": cached_results}
 
     reset_stage("phase3")
@@ -242,8 +281,8 @@ def phase3_llm_judge(state: WorkflowState) -> dict:
         pairs_to_judge.append(p)
     total = len(pairs_to_judge)
     print(
-        f"[阶段3] 需LLM判断: {total} 对 "
-        f"(排除阶段0已确认: {len(phase0_keys)}, 已恢复: {len(existing_map)})"
+        f"[闃舵3] 闇€LLM鍒ゆ柇: {total} 瀵?"
+        f"(鎺掗櫎闃舵0宸茬‘璁? {len(phase0_keys)}, 宸叉仮澶? {len(existing_map)})"
     )
 
     judge_results = list(existing_results)
@@ -263,7 +302,7 @@ def phase3_llm_judge(state: WorkflowState) -> dict:
         for future in as_completed(futures):
             done_count += 1
             if done_count % 500 == 0 or done_count == total:
-                print(f"[阶段3] LLM判断进度: {done_count}/{total}")
+                print(f"[闃舵3] LLM鍒ゆ柇杩涘害: {done_count}/{total}")
             result = future.result()
             with results_lock:
                 judge_results.append(result)
@@ -276,8 +315,7 @@ def phase3_llm_judge(state: WorkflowState) -> dict:
         append_phase3_results(batch_buffer)
         batch_buffer = []
 
-    # 加入阶段0的结果
-    phase0_results_to_append = []
+    # 鍔犲叆闃舵0鐨勭粨鏋?    phase0_results_to_append = []
     for p in state["phase0_pairs"]:
         key = p.key
         if key in existing_map:
@@ -291,68 +329,63 @@ def phase3_llm_judge(state: WorkflowState) -> dict:
 
     yes_count = sum(1 for r in judge_results if r.result == "YES")
     no_count = sum(1 for r in judge_results if r.result == "NO")
-    print(f"[阶段3] 判断完成. YES: {yes_count}, NO: {no_count}")
+    print(f"[闃舵3] 鍒ゆ柇瀹屾垚. YES: {yes_count}, NO: {no_count}")
 
     return {"judge_results": judge_results}
 
 
-# ══════════════════════════════════════
-# 阶段 4: 构建图 + 组内补判 + 聚合（多线程）
-# ══════════════════════════════════════
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
+# 闃舵 4: 鏋勫缓鍥?+ 缁勫唴琛ュ垽 + 鑱氬悎锛堝绾跨▼锛?# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
 def phase4_build_graph(state: WorkflowState) -> dict:
-    """构建相似关系图，组内补判，最终聚合"""
+    """构建图并复核桥边，用于拆分误连的大连通团。"""
     judge_results: list[JudgeResult] = state["judge_results"]
 
-    # 构建已判断集合（快速查找）
-    judged_pairs: dict[tuple, str] = {}
+    judged_pairs: dict[tuple[str, str], str] = {}
     for r in judge_results:
         judged_pairs[tuple(sorted([r.name_a, r.name_b]))] = r.result
 
     yes_edges = {pair_key for pair_key, result in judged_pairs.items() if result == "YES"}
     components = _connected_components_from_edges(yes_edges)
-    print(f"[阶段4] 连通分量: {len(components)}")
+    print(f"[phase4] connected components: {len(components)}")
 
-    # 组内补判：找缺失的边
-    supplement_pairs = []
-    for comp in components:
-        members = list(comp)
-        if len(members) <= 1:
-            continue
-        for a, b in combinations(members, 2):
-            pair_key = tuple(sorted([a, b]))
-            if pair_key not in judged_pairs:
-                supplement_pairs.append(CandidatePair(
-                    name_a=pair_key[0], name_b=pair_key[1], source="supplement"
-                ))
+    bridge_edges, articulation_points = _find_bridges_and_articulation_points(yes_edges)
+    bridge_pairs = [
+        CandidatePair(name_a=a, name_b=b, source="bridge_recheck")
+        for a, b in bridge_edges
+    ]
+    print(
+        f"[phase4] bridge recheck pairs: {len(bridge_pairs)}, "
+        f"articulation points: {len(articulation_points)}"
+    )
 
-    print(f"[阶段4] 组内补判: {len(supplement_pairs)} 对")
-
-    # 多线程执行补判（支持断点恢复）
     reset_stage("phase4")
-    existing_supplement = load_phase4_results() if (ENABLE_CHECKPOINT_RESUME and has_phase4_results()) else []
-    existing_supplement_map = {
+    existing_phase4 = load_phase4_results() if (ENABLE_CHECKPOINT_RESUME and has_phase4_results()) else []
+    existing_bridge_results = [r for r in existing_phase4 if r.source == "bridge_recheck"]
+    existing_bridge_map = {
         tuple(sorted([r.name_a, r.name_b])): r
-        for r in existing_supplement
+        for r in existing_bridge_results
     }
-    supplement_pairs_to_run = [p for p in supplement_pairs if p.key not in existing_supplement_map]
-    if existing_supplement:
-        print(f"[阶段4] 已恢复补判结果: {len(existing_supplement)} 对")
+    bridge_pairs_to_run = [p for p in bridge_pairs if p.key not in existing_bridge_map]
+    if existing_bridge_results:
+        print(f"[phase4] resumed bridge recheck results: {len(existing_bridge_results)}")
 
-    supplement_results = list(existing_supplement)
-    if supplement_pairs_to_run:
+    bridge_results = list(existing_bridge_results)
+    if bridge_pairs_to_run:
         def judge_one(pair: CandidatePair) -> JudgeResult:
             answer = llm_judge(pair.name_a, pair.name_b)
             return JudgeResult(
-                name_a=pair.name_a, name_b=pair.name_b,
-                result=answer, source="supplement"
+                name_a=pair.name_a,
+                name_b=pair.name_b,
+                result=answer,
+                source="bridge_recheck",
             )
 
         with ThreadPoolExecutor(max_workers=LLM_CONCURRENCY) as pool:
-            futures = [pool.submit(judge_one, p) for p in supplement_pairs_to_run]
+            futures = [pool.submit(judge_one, p) for p in bridge_pairs_to_run]
             batch_buffer = []
             for f in as_completed(futures):
                 result = f.result()
-                supplement_results.append(result)
+                bridge_results.append(result)
                 batch_buffer.append(result)
                 if len(batch_buffer) >= PHASE4_WRITE_BATCH_SIZE:
                     append_phase4_results(batch_buffer)
@@ -361,15 +394,19 @@ def phase4_build_graph(state: WorkflowState) -> dict:
                 append_phase4_results(batch_buffer)
     mark_stage_completed("phase4")
 
-    # 合并所有判断结果
-    all_results = judge_results + supplement_results
-    all_edges = list(all_results)
+    final_pair_results = dict(judged_pairs)
+    for r in bridge_results:
+        final_pair_results[tuple(sorted([r.name_a, r.name_b]))] = r.result
 
-    # 重建连通分量（只用 YES 边）
+    all_edges = [
+        JudgeResult(name_a=a, name_b=b, result=result, source="final")
+        for (a, b), result in final_pair_results.items()
+    ]
+
     final_yes_edges = {
-        tuple(sorted([r.name_a, r.name_b]))
-        for r in all_results
-        if r.result == "YES"
+        pair_key
+        for pair_key, result in final_pair_results.items()
+        if result == "YES"
     }
     final_components = _connected_components_from_edges(final_yes_edges)
     node_to_component = {}
@@ -398,7 +435,10 @@ def phase4_build_graph(state: WorkflowState) -> dict:
             needs_review=(n > GROUP_SIZE_REVIEW_THRESHOLD or not is_fully_connected),
         ))
 
-    print(f"[阶段4] 最终分组: {len(groups)}, "
-          f"需人工审核: {sum(1 for g in groups if g.needs_review)}")
+    print(
+        f"[phase4] final groups: {len(groups)}, "
+        f"needs review: {sum(1 for g in groups if g.needs_review)}"
+    )
 
     return {"groups": groups, "edges": all_edges}
+
