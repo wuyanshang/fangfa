@@ -1,5 +1,5 @@
 ﻿"""
-LangGraph 鑺傜偣锛氭瘡涓樁娈靛搴斾竴涓妭鐐瑰嚱鏁?鍏ㄩ儴浣跨敤澶氱嚎绋嬪苟鍙戯紙ThreadPoolExecutor锛?"""
+LangGraph workflow nodes implemented with ThreadPoolExecutor."""
 import logging
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 def _connected_components_from_edges(edges: set[tuple[str, str]]) -> list[set[str]]:
-    """鐢ㄥ苟鏌ラ泦璁＄畻鏃犲悜鍥捐繛閫氬垎閲忋€?""
+    """Compute connected components for an undirected graph."""
     parent: dict[str, str] = {}
     rank: dict[str, int] = {}
 
@@ -79,7 +79,7 @@ def _connected_components_from_edges(edges: set[tuple[str, str]]) -> list[set[st
 def _find_bridges_and_articulation_points(
     edges: set[tuple[str, str]]
 ) -> tuple[set[tuple[str, str]], set[str]]:
-    """Tarjan bridge/articulation algorithm on undirected graph."""
+    """Find bridge edges and articulation points via Tarjan algorithm."""
     adjacency: dict[str, set[str]] = defaultdict(set)
     for a, b in edges:
         adjacency[a].add(b)
@@ -124,10 +124,10 @@ def _find_bridges_and_articulation_points(
     return bridges, articulation_points
 
 
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
-# 闃舵 0: 绮剧‘鍚屽悕褰掔粍锛堢函鍐呭瓨锛屾棤IO锛?# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
+# 
+# 0: IO?# 
 def phase0_normalize(state: WorkflowState) -> dict:
-    """瀛楃涓插綊涓€鍖?鈫?绮剧‘鍚屽悕鑱氬悎"""
+    """Normalize names and generate exact-match pairs from normalized buckets."""
     rows: list[AssetRow] = state["asset_rows"]
 
     groups = defaultdict(list)
@@ -152,8 +152,8 @@ def phase0_normalize(state: WorkflowState) -> dict:
                         score=1.0,
                     ))
 
-    print(f"[闃舵0] 鎬昏鏁? {len(rows)}, 鍞竴璧勪骇鍚? {len(unique_names)}, "
-          f"绮剧‘鍚屽悕瀵? {len(phase0_pairs)}")
+    print(f"[0] ? {len(rows)}, ? {len(unique_names)}, "
+          f"? {len(phase0_pairs)}")
 
     return {
         "normalized_groups": dict(groups),
@@ -162,10 +162,10 @@ def phase0_normalize(state: WorkflowState) -> dict:
     }
 
 
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
-# 闃舵 1: KNN 蹇瓫锛堝绾跨▼锛?# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
+# 
+# 1: KNN ?# 
 def phase1_knn_filter(state: WorkflowState) -> dict:
-    """瀵规瘡涓敮涓€璧勪骇鍚嶅仛 knn top-1 蹇瓫锛屽绾跨▼骞跺彂"""
+    """Run KNN top-1 filter and keep names that pass the threshold."""
     unique_names = state["unique_names"]
     candidate_names = []
     total = len(unique_names)
@@ -185,21 +185,21 @@ def phase1_knn_filter(state: WorkflowState) -> dict:
         for future in as_completed(futures):
             done_count += 1
             if done_count % 500 == 0 or done_count == total:
-                print(f"[闃舵1] 杩涘害: {done_count}/{total}")
-            result = future.result()  # retry_forever 淇濊瘉涓嶄細鎶涘紓甯?            if result is not None:
+                print(f"[1] : {done_count}/{total}")
+            result = future.result()  # retry_forever ?            if result is not None:
                 candidate_names.append(result)
 
-    print(f"[闃舵1] 蹇瓫鍚庡€欓€夎祫浜? {len(candidate_names)} / {total}")
+    print(f"[1] ? {len(candidate_names)} / {total}")
     return {"candidate_names": candidate_names}
 
 
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
-# 闃舵 2: 涓夎矾鍙洖 + 瀵圭О鍘婚噸锛堝绾跨▼锛?# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
+# 
+# 2: + ?# 
 def phase2_recall(state: WorkflowState) -> dict:
-    """瀵瑰€欓€夎祫浜у仛 3 璺彫鍥烇紝鏀堕泦鍊欓€夊骞跺幓閲嶏紝澶氱嚎绋嬪苟鍙?""
+    """Recall candidate pairs from semantic/BM25/fuzzy routes and deduplicate."""
     if ENABLE_CHECKPOINT_RESUME and is_stage_completed("phase2") and has_phase2_pairs():
         cached_pairs = load_phase2_pairs()
-        print(f"[闃舵2] 鏂偣鎭㈠: 宸插姞杞藉€欓€夊 {len(cached_pairs)}")
+        print(f"[2] :  {len(cached_pairs)}")
         return {"all_pairs": cached_pairs}
 
     reset_stage("phase2")
@@ -209,23 +209,23 @@ def phase2_recall(state: WorkflowState) -> dict:
     pair_set_lock = __import__("threading").Lock()
 
     def recall_one(name: str) -> list[str]:
-        """涓夎矾鍙洖涓€涓祫浜у悕鐨勬墍鏈夊€欓€?""
+        """Recall candidate names for a single asset name."""
         exclude = [name]
         recalled = set()
 
-        # R1: 璇箟鍙洖
+ # R1: 
         embedding = get_embedding_from_es(name)
         if embedding:
             r1 = es_knn_search(embedding, k=SEMANTIC_TOP_K, exclude_names=exclude)
             for item in r1:
                 recalled.add(item["asset"])
 
-        # R2: BM25 鍙洖
+ # R2: BM25 
         r2 = es_bm25_search(name, top_k=BM25_TOP_K, exclude_names=exclude)
         for item in r2:
             recalled.add(item["asset"])
 
-        # R3: 绮剧‘/妯＄硦鍖归厤鍙洖
+ # R3: /
         r3 = es_exact_fuzzy_search(name, top_k=EXACT_MATCH_TOP_K, exclude_names=exclude)
         for item in r3:
             recalled.add(item["asset"])
@@ -238,7 +238,7 @@ def phase2_recall(state: WorkflowState) -> dict:
         for future in as_completed(futures):
             done_count += 1
             if done_count % 200 == 0 or done_count == total:
-                print(f"[闃舵2] 鍙洖杩涘害: {done_count}/{total}")
+                print(f"[2] : {done_count}/{total}")
             name_a = futures[future]
             recalled_names = future.result()
             with pair_set_lock:
@@ -252,17 +252,17 @@ def phase2_recall(state: WorkflowState) -> dict:
     ]
     write_phase2_pairs_batched(all_pairs)
     mark_stage_completed("phase2")
-    print(f"[闃舵2] 鍘婚噸鍚庡€欓€夊: {len(all_pairs)}")
+    print(f"[2] : {len(all_pairs)}")
     return {"all_pairs": all_pairs}
 
 
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
-# 闃舵 3: LLM 鎵归噺鍒ゆ柇锛堝绾跨▼锛?# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
+# 
+# 3: LLM ?# 
 def phase3_llm_judge(state: WorkflowState) -> dict:
-    """瀵规墍鏈夊€欓€夊璋冪敤 LLM 鍒ゆ柇 YES/NO锛屽绾跨▼骞跺彂"""
+    """Run batched LLM YES/NO judgments for candidate pairs."""
     if ENABLE_CHECKPOINT_RESUME and is_stage_completed("phase3") and has_phase3_results():
         cached_results = load_phase3_results()
-        print(f"[闃舵3] 鏂偣鎭㈠: 宸插姞杞藉垽鏂粨鏋?{len(cached_results)}")
+        print(f"[3] : ?{len(cached_results)}")
         return {"judge_results": cached_results}
 
     reset_stage("phase3")
@@ -281,8 +281,8 @@ def phase3_llm_judge(state: WorkflowState) -> dict:
         pairs_to_judge.append(p)
     total = len(pairs_to_judge)
     print(
-        f"[闃舵3] 闇€LLM鍒ゆ柇: {total} 瀵?"
-        f"(鎺掗櫎闃舵0宸茬‘璁? {len(phase0_keys)}, 宸叉仮澶? {len(existing_map)})"
+        f"[3] LLM: {total} ?"
+        f"(0? {len(phase0_keys)}, ? {len(existing_map)})"
     )
 
     judge_results = list(existing_results)
@@ -302,7 +302,7 @@ def phase3_llm_judge(state: WorkflowState) -> dict:
         for future in as_completed(futures):
             done_count += 1
             if done_count % 500 == 0 or done_count == total:
-                print(f"[闃舵3] LLM鍒ゆ柇杩涘害: {done_count}/{total}")
+                print(f"[3] LLM: {done_count}/{total}")
             result = future.result()
             with results_lock:
                 judge_results.append(result)
@@ -315,7 +315,7 @@ def phase3_llm_judge(state: WorkflowState) -> dict:
         append_phase3_results(batch_buffer)
         batch_buffer = []
 
-    # 鍔犲叆闃舵0鐨勭粨鏋?    phase0_results_to_append = []
+ # 0? phase0_results_to_append = []
     for p in state["phase0_pairs"]:
         key = p.key
         if key in existing_map:
@@ -329,15 +329,15 @@ def phase3_llm_judge(state: WorkflowState) -> dict:
 
     yes_count = sum(1 for r in judge_results if r.result == "YES")
     no_count = sum(1 for r in judge_results if r.result == "NO")
-    print(f"[闃舵3] 鍒ゆ柇瀹屾垚. YES: {yes_count}, NO: {no_count}")
+    print(f"[3] . YES: {yes_count}, NO: {no_count}")
 
     return {"judge_results": judge_results}
 
 
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
-# 闃舵 4: 鏋勫缓鍥?+ 缁勫唴琛ュ垽 + 鑱氬悎锛堝绾跨▼锛?# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
+# 
+# 4: ?+ + ?# 
 def phase4_build_graph(state: WorkflowState) -> dict:
-    """构建图并复核桥边，用于拆分误连的大连通团。"""
+    """Recheck bridge edges to split mistakenly merged large components."""
     judge_results: list[JudgeResult] = state["judge_results"]
 
     judged_pairs: dict[tuple[str, str], str] = {}
